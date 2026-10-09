@@ -22,6 +22,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
+import { distroName } from "./lib/wsl-host.js";
+
 import {
   DEFAULT_STALE_MINUTES,
   KIT_INSTALLER_REL,
@@ -228,7 +230,9 @@ export async function execute(args = {}, config = {}) {
     return { ok: false, action, error: "kit_incomplete", missing: ready.missing, kitRoot: kit.root };
   }
 
-  const distro = process.env.WSL_DISTRO_NAME || "";
+  // 发行版名不要只信环境变量：dsh 进程、非登录 shell、子进程里它可能为空。
+  // wsl-host.js 的 distroName() 会去问 Windows（wslpath），那才是可靠的来源。
+  const distro = process.env.WSL_DISTRO_NAME || distroName({ env: process.env }) || "";
   const installerWin = wslPathToWin(kit.installer) || wslInternalToUnc(kit.installer, distro);
   if (!installerWin) {
     return {
