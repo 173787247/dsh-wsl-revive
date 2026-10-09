@@ -12,6 +12,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
+import { distroName } from "./lib/wsl-host.js";
 import {
   DEFAULT_INTERVAL_MINUTES,
   DEFAULT_STALE_MINUTES,
@@ -79,8 +80,21 @@ function wslPathToWin(p) {
   return `${m[1].toUpperCase()}:\\${m[2].replace(/\//g, "\\")}`;
 }
 
+/**
+ * WSL 内部文件系统（ext4）里的路径没有 C:\ 对应物，Windows 只能经 UNC 访问：
+ *   /home/u/.dsh/tray/x.ps1  ->  \\wsl.localhost\<distro>\home\u\.dsh\tray\x.ps1
+ *
+ * 常驻者脚本就在这个文件系统里（心跳日志在 Windows 家目录，两者不是一回事），
+ * 所以只写 /mnt 的转换是不够的 —— 那个 bug 是真机测出来的。
+ */
+function wslInternalToUnc(p, distro) {
+  const abs = String(p || "");
+  if (!abs.startsWith("/") || !distro) return "";
+  return `\\\\wsl.localhost\\${distro}${abs.replace(/\//g, "\\")}`;
+}
+
 /** 常驻者脚本与心跳日志的位置：配置优先，否则按 kit 的默认位置推导。 */
-function paths(config, profileWin) {
+function paths(config, profileWin, distro) {
   const trayWsl = join(homedir(), ".dsh", "tray");
   const watcherWsl = config.watcherPath
     ? String(config.watcherPath)
@@ -93,7 +107,8 @@ function paths(config, profileWin) {
   const guardDirWsl = join(homedir(), ".dsh", "revive");
   return {
     watcherWsl,
-    watcherWin: wslPathToWin(watcherWsl),
+    // 脚本在 WSL 内部文件系统：走 UNC；如果它恰好在 /mnt 下，用盘符形式
+    watcherWin: wslPathToWin(watcherWsl) || wslInternalToUnc(watcherWsl, distro),
     logWin,
     logWsl: winPathToWsl(logWin),
     guardDirWsl,
@@ -154,7 +169,8 @@ export async function execute(args = {}, config = {}) {
   if (!profileWin) {
     return { ok: false, action, error: "windows_unreachable", advice: advice("windows_unreachable") };
   }
-  const p = paths(config, profileWin);
+  const distro = distroName({ env: process.env });
+  const p = paths(config, profileWin, distro);
 
   const guard = await win("schtasks.exe", schtasksQueryArgs({ taskName: TASK_NAME }), timeoutMs);
   const guardInstalled = parseSchtasksPresent(guard.stdout, guard.stderr, guard.code);
@@ -211,7 +227,7 @@ export async function execute(args = {}, config = {}) {
       }),
       "utf8",
     );
-    const guardWin = wslPathToWin(p.guardPs1Wsl);
+    const guardWin = wslPathToWin(p.guardPs1Wsl) || wslInternalToUnc(p.guardPs1Wsl, distro);
     const created = await win(
       "schtasks.exe",
       schtasksCreateArgs({ taskName: TASK_NAME, guardPs1Win: guardWin, intervalMinutes }),
