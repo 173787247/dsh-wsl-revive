@@ -121,3 +121,25 @@ test("安装器没有 pid 行时也不假装成功", () => {
   assert.equal(s.ok, true);
   assert.match(s.detail, /没有 pid 行/);
 });
+
+test("工具输出必须能无损序列化（不能有 undefined / NaN）", () => {
+  // 这条是补的：install 曾经返回带 undefined 字段的对象，被运行时判为
+  // "value is not lossless JSON"，工具直接失败。undefined 在对象里会消失，
+  // 但那已经不"无损"了 —— 缺字段和显式 null 是两回事。
+  const sample = {
+    ok: true,
+    action: "install",
+    resident: "alive",
+    ageMinutes: 0.5,
+    installed: true,
+    detail: "收掉了 1 个已有实例，起了新的 pid 1",
+    kitRoot: "/kit",
+    advice: [],
+  };
+  const round = JSON.parse(JSON.stringify(sample));
+  assert.deepEqual(round, sample);
+  assert.equal("installerError" in round, false);
+  // 任何 undefined 都会在序列化时消失 —— 所以宁可不要这个键
+  const withUndef = { ...sample, installerError: undefined };
+  assert.equal(Object.keys(JSON.parse(JSON.stringify(withUndef))).length, Object.keys(sample).length);
+});

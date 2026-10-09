@@ -210,7 +210,7 @@ export async function execute(args = {}, config = {}) {
       ok: true,
       action,
       resident,
-      ageMinutes: mins,
+      ageMinutes: mins === null ? null : Number(mins),
       summary: describe(resident, mins),
       installed: link.installed,
       installDetail: link.detail,
@@ -249,18 +249,24 @@ export async function execute(args = {}, config = {}) {
   const res = await win("powershell.exe", psArgs, timeoutMs * 3);
   const sum = summarizeInstaller(res.stdout, res.code);
 
-  return {
-    ok: res.ok && sum.ok,
+  // 只放能无损序列化的值：undefined 会让工具输出被判为非法 JSON。
+  const out = {
+    ok: Boolean(res.ok && sum.ok),
     action,
     resident,
-    ageMinutes: mins,
-    installed: action === "install" ? true : false,
+    ageMinutes: mins === null ? null : Number(mins),
+    installed: action === "install",
     detail: sum.detail,
-    installerOutput: res.stdout.trim().slice(-800) || undefined,
-    installerError: res.ok ? undefined : res.stderr.trim().slice(-400) || undefined,
     kitRoot: kit.root,
     advice: res.ok && sum.ok ? [] : ["把 installerOutput 发出来看"],
   };
+  const stdoutTail = res.stdout.trim().slice(-800);
+  if (stdoutTail) out.installerOutput = stdoutTail;
+  if (!res.ok) {
+    const errTail = res.stderr.trim().slice(-400);
+    if (errTail) out.installerError = errTail;
+  }
+  return out;
 }
 
 export function format(value) {
