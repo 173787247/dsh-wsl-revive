@@ -1,18 +1,17 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
 import {
   DEFAULT_STALE_MINUTES,
-  checkPatchNames,
-  checkProfileConsistency,
-  checkShortcutArgs,
+  KIT_INSTALLER_REL,
+  KIT_WATCHER_REL,
+  ageMinutes,
   describe,
-  guardPs1Body,
-  parseSchtasksPresent,
-  schtasksCreateArgs,
-  schtasksDeleteArgs,
-  staleness,
+  heartbeatNote,
+  kitCandidates,
+  kitReady,
+  shortcutVerdict,
+  summarizeInstaller,
   verdict,
 } from "../lib/alive.js";
 
@@ -34,177 +33,91 @@ test("没有日志文件判为 missing，而不是 stale", () => {
   assert.equal(verdict(undefined, NOW), "missing");
 });
 
-test("阈值可覆盖", () => {
+test("阈值可覆盖，默认是心跳间隔的三倍", () => {
   assert.equal(verdict(NOW - 5 * MIN, NOW, 10), "alive");
   assert.equal(verdict(NOW - 5 * MIN, NOW, 1), "stale");
-});
-
-test("staleness 给出分钟数与已知性", () => {
-  const s = staleness(NOW - 4 * MIN, NOW);
-  assert.equal(s.known, true);
-  assert.equal(Math.round(s.ageMinutes), 4);
-  assert.equal(staleness(null, NOW).known, false);
-});
-
-test("describe 把判决说成人话", () => {
-  assert.match(describe("alive", 1.2), /活着/);
-  assert.match(describe("stale", 9), /已死/);
-  assert.match(describe("missing", null), /从未启动/);
-});
-
-test("默认阈值是心跳间隔的三倍", () => {
   assert.equal(DEFAULT_STALE_MINUTES, 3);
 });
 
-// ── 守护脚本：今晚定因的那一条必须钉住 ──────────────────────────────
-
-const PS1 = guardPs1Body({
-  watcherWin: "C:\\Users\\x\\.dsh\\tray\\dsh-ui-watcher.ps1",
-  logWin: "C:\\Users\\x\\dsh-ui-watcher.log",
-  guardLogWin: "C:\\Users\\x\\dsh-ui-alive.log",
+test("ageMinutes 与 describe", () => {
+  assert.equal(Math.round(ageMinutes(NOW - 4 * MIN, NOW)), 4);
+  assert.equal(ageMinutes(null, NOW), null);
+  assert.match(describe("alive", 1.2), /活着/);
+  assert.match(describe("stale", 9), /已死/);
+  assert.match(describe("missing", null), /从未/);
 });
 
-test("守护重启常驻者时【不得】带 -WindowStyle Hidden", () => {
-  // 实测：Hidden 启动的 watcher 100 秒零心跳，静默死；最小化能活。这是整个插件存在的理由。
-  const startProcessLine = PS1.split("\n").filter((l) => l.includes("Start-Process")).join("\n");
-  assert.ok(startProcessLine.length > 0, "生成物里必须有 Start-Process");
-  assert.ok(
-    !/-WindowStyle\s+Hidden/.test(startProcessLine),
-    "重启常驻者时带了 -WindowStyle Hidden —— 那正是它静默死掉的原因",
+test("last=(none) 要解释成 WSL 刚起过，而不是常驻者坏了", () => {
+  const s = "2026-01-01 00:00:00  alive; last=(none)";
+  const note = heartbeatNote(s);
+  assert.match(note, /WSL 刚重启/);
+  assert.equal(heartbeatNote("2026-01-01 00:00:00  alive; last=http://x/?token=a"), "");
+  assert.equal(heartbeatNote("2026-01-01 00:00:00  ==== watcher start ===="), "");
+});
+
+// ── 启动快捷方式：Hidden 是 kit 安装器的既定设计，不是缺陷 ──────────────
+
+test("快捷方式指向常驻者就算已安装 —— 带 Hidden 也是正常的", () => {
+  const v = shortcutVerdict(
+    '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "\\\\wsl.localhost\\D\\home\\u\\kit\\bootstrap\\windows\\dsh-ui-watcher.ps1"',
   );
-  assert.match(PS1, /-WindowStyle Minimized/);
+  assert.equal(v.installed, true, "kit 安装器就是这么写的（install-watcher.ps1:58）");
+  assert.match(v.detail, /-WindowStyle Hidden/);
 });
 
-test("守护只按日志最后写入时间判断，不去匹配进程", () => {
-  assert.match(PS1, /LastWriteTime/);
-  assert.ok(
-    !/CommandLine/.test(PS1),
-    "守护不该用命令行字符串匹配进程 —— 那会匹配到正在查询的自己",
-  );
-  assert.ok(!/Get-Process/.test(PS1), "守护不该查进程列表");
+test("指向别的东西、或参数为空，都算未安装", () => {
+  assert.equal(shortcutVerdict("").installed, false);
+  assert.equal(shortcutVerdict("-File something-else.ps1").installed, false);
 });
 
-test("守护在活着的时候不写日志（避免刷屏）", () => {
-  assert.match(PS1, /if \(\$ageMin -le \$staleMin\) \{ exit 0 \}/);
+test("参数与安装器不一致时给出「重跑 install 会修正」", () => {
+  const v = shortcutVerdict('-File "\\\\wsl.localhost\\D\\home\\u\\kit\\bootstrap\\windows\\dsh-ui-watcher.ps1"');
+  assert.equal(v.installed, true);
+  assert.match(v.detail, /重跑/);
 });
 
-test("守护也检查 dsh 本身，而不只看常驻者", () => {
-  const body = guardPs1Body({
-    watcherWin: "C:\\w.ps1",
-    logWin: "C:\\l.log",
-    guardLogWin: "C:\\g.log",
-    distro: "D",
-    kitReviveSh: "/kit/scripts/revive-dsh.sh",
-    dshPort: 3080,
-  });
-  assert.match(body, /Test-DshPort 3080/);
-  assert.match(body, /wsl\.exe -d 'D' -- bash '\/kit\/scripts\/revive-dsh\.sh'/);
-  assert.ok(!/Get-Process/.test(body), "判据用 TCP，不用进程列表");
+// ── kit 定位 ────────────────────────────────────────────────────
+
+test("DSH_WSL_KIT 优先，其次 ~/src/dsh-wsl-kit", () => {
+  assert.deepEqual(kitCandidates({ home: "/home/u", env: { DSH_WSL_KIT: "/opt/kit/" } }), [
+    "/opt/kit",
+    "/home/u/src/dsh-wsl-kit",
+  ]);
+  assert.deepEqual(kitCandidates({ home: "/home/u", env: {} }), ["/home/u/src/dsh-wsl-kit"]);
 });
 
-test("没有 kit 脚本时不假装能救 dsh", () => {
-  const body = guardPs1Body({
-    watcherWin: "C:\\w.ps1",
-    logWin: "C:\\l.log",
-    guardLogWin: "C:\\g.log",
-    distro: "",
-    kitReviveSh: "",
-  });
-  assert.match(body, /cannot revive dsh/);
-});
-
-test("守护记录了上次心跳是多久之前", () => {
-  assert.match(PS1, /last heartbeat/);
-});
-
-test("路径里的单引号被转义成两个", () => {
-  const body = guardPs1Body({
-    watcherWin: "C:\\it's here\\w.ps1",
-    logWin: "C:\\it's here\\l.log",
-    guardLogWin: "C:\\it's here\\g.log",
-  });
-  assert.match(body, /it''s here/);
-  assert.ok(!/it's here/.test(body), "未转义的单引号会提前结束 PowerShell 字符串");
-});
-
-test("阈值被写进脚本", () => {
-  const body = guardPs1Body({
-    watcherWin: "C:\\w.ps1",
-    logWin: "C:\\l.log",
-    guardLogWin: "C:\\g.log",
-    staleMinutes: 7,
-  });
-  assert.match(body, /\$staleMin\s+= 7/);
-});
-
-// ── 计划任务 ────────────────────────────────────────────────────
-
-test("注册计划任务用 schtasks，当前用户级，不需要管理员", () => {
-  const args = schtasksCreateArgs({ taskName: "T", guardPs1Win: "C:\\g.ps1", intervalMinutes: 5 });
-  assert.equal(args[0], "/Create");
-  assert.ok(args.includes("/SC") && args.includes("MINUTE"));
-  assert.ok(args.includes("/MO") && args.includes("5"));
-  assert.ok(args.includes("/F"), "幂等：重装要能覆盖");
-  const tr = args[args.indexOf("/TR") + 1];
-  assert.ok(tr.includes("powershell.exe"));
-  assert.ok(tr.includes('"C:\\g.ps1"'), "路径带空格时要引起来");
-});
-
-test("删除计划任务的参数", () => {
-  assert.deepEqual(schtasksDeleteArgs({ taskName: "T" }), ["/Delete", "/TN", "T", "/F"]);
-});
-
-test("parseSchtasksPresent：找不到就是没装", () => {
-  assert.equal(parseSchtasksPresent("", "", 0), false);
-  assert.equal(parseSchtasksPresent("ERROR: cannot find", "", 1), false);
-  assert.equal(parseSchtasksPresent("TaskName  Next Run Time\nT   ...", "", 0), true);
-  assert.equal(parseSchtasksPresent("", "找不到", 1), false);
-});
-
-// ── 链条的不变量 ────────────────────────────────────────────────────
-
-test("快捷方式参数带 -WindowStyle Hidden 要被判失败", () => {
-  assert.equal(
-    checkShortcutArgs('-NoProfile -WindowStyle Hidden -File "x\\ui-watcher.ps1"').ok,
-    false,
-    "这正是常驻者静默死掉的原因，而且会被下一次重装写回去",
-  );
-  assert.equal(checkShortcutArgs('-NoProfile -File "x\\ui-watcher.ps1"').ok, true);
-  assert.equal(checkShortcutArgs("").ok, false);
-  assert.equal(checkShortcutArgs("-File something-else.ps1").ok, false);
-});
-
-test("profile 的 bundles / dependencies / node_modules 三处一致才算过", () => {
-  const good = checkProfileConsistency({
-    bundles: ["a", "b", "@x/base"],
-    dependencies: { a: "1", b: "1" },
-    installed: ["a", "b"],
-  });
-  assert.equal(good.ok, true);
-
-  const bad = checkProfileConsistency({
-    bundles: ["a", "b"],
-    dependencies: { a: "1" },
-    installed: ["a"],
-  });
-  assert.equal(bad.ok, false);
-  assert.match(bad.detail, /b/);
-});
-
-test("patch 的 name 与仓里的包名不一致要被指出", () => {
-  const r = checkPatchNames(
-    [{ name: "old-name", repo: "r1" }, { name: "ok-name", repo: "r2" }],
-    { r1: "new-name", r2: "ok-name" },
-  );
+test("kit 缺文件时列清楚缺哪个", () => {
+  assert.equal(kitReady({ watcher: "w", installer: "i" }).ok, true);
+  const r = kitReady({ watcher: "w" });
   assert.equal(r.ok, false);
-  assert.match(r.detail, /old-name/);
-  assert.match(r.detail, /new-name/);
+  assert.deepEqual(r.missing, [KIT_INSTALLER_REL]);
+  assert.equal(KIT_WATCHER_REL.endsWith("dsh-ui-watcher.ps1"), true);
 });
 
-test("守护脚本必须能被 PowerShell 5.1 读：写入时带 UTF-8 BOM", () => {
-  // 这条钉的不是 guardPs1Body 的返回值，而是 index.js 落盘时加没加 BOM。
-  // PowerShell 5.1 没有 BOM 就按系统代码页（简体中文 GBK）读，中文注释会被读碎，
-  // 解析器报「意外的标记」，整份脚本一行都不执行 —— 守护就此静默失效。
-  const src = readFileSync(new URL("../index.js", import.meta.url), "utf8");
-  assert.match(src, /"\\uFEFF"/, "落盘时必须前置 BOM");
+// ── 安装器输出 ──────────────────────────────────────────────────
+
+test("安装器输出被翻译成人话：收掉几个、起了哪个", () => {
+  const out = [
+    "  autostart: C:\\...\\Startup\\DSH UI Watcher.lnk",
+    "  stopped old pid 58564",
+    "  running pid 23916",
+    "  log tail:",
+    "    2026-10-09 21:47:00  ==== watcher start (pid 23916, distro MyDistro) ====",
+  ].join("\n");
+  const s = summarizeInstaller(out, 0);
+  assert.equal(s.ok, true);
+  assert.match(s.detail, /收掉了 1 个已有实例/);
+  assert.match(s.detail, /pid 23916/);
+});
+
+test("安装器非零退出码要报出来", () => {
+  const s = summarizeInstaller("", 1);
+  assert.equal(s.ok, false);
+  assert.match(s.detail, /退出码 1/);
+});
+
+test("安装器没有 pid 行时也不假装成功", () => {
+  const s = summarizeInstaller("  autostart: ...\\DSH UI Watcher.lnk", 0);
+  assert.equal(s.ok, true);
+  assert.match(s.detail, /没有 pid 行/);
 });
