@@ -1,0 +1,42 @@
+{
+  "name": "dsh-wsl-revive",
+  "version": "0.1.0",
+  "description": "Report whether the dsh web resident is still alive in WSL, and install a Windows-side guard that revives it when it is not.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/173787247/dsh-wsl-revive.git"
+  },
+  "bugs": {
+    "url": "https://github.com/173787247/dsh-wsl-revive/issues"
+  },
+  "homepage": "https://github.com/173787247/dsh-wsl-revive#readme",
+  "type": "module",
+  "main": "index.js",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "files": [
+    "index.js",
+    "lib",
+    "cordis.patch.yml",
+    "README.md",
+    "README.zh.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "wsl",
+    "keepalive",
+    "resident"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

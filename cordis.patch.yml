@@ -1,0 +1,11 @@
+- insert:
+    - id: dsh-wsl-revive
+      name: dsh-wsl-revive
+      config:
+        timeoutMs: 60000
+        # 判死阈值与守护间隔。心跳是每 60 秒一行，所以 3 分钟是安全的判死线。
+        staleMinutes: 3
+        intervalMinutes: 5
+        # 常驻者脚本与心跳日志的位置；留空则按 kit 的默认位置推导。
+        watcherPath: ""
+        heartbeatLog: ""
