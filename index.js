@@ -284,7 +284,32 @@ export async function execute(args = {}, config = {}) {
       detail: portUp ? "在听" : "连不上 —— dsh 可能不在了，守护会拉起它",
     });
 
-    // ⑥ 守护任务
+    // ⑥ 守护脚本能不能被 PowerShell 解析 —— 这一项是补上的：
+    // 上一版给脚本加了中文注释却没写 BOM，PowerShell 5.1 按 GBK 读碎，
+    // 整份脚本一行都不执行（连原本能工作的部分也停了），而任务仍报"已运行"。
+    if (existsSync(p.guardPs1Wsl)) {
+      const parse = await win(
+        "powershell.exe",
+        [
+          "-NoProfile",
+          "-Command",
+          `$e=$null;[System.Management.Automation.Language.Parser]::ParseFile(` +
+            `'${p.guardPs1Wsl.replace(/'/g, "''")}',[ref]$null,[ref]$e)|Out-Null;` +
+            `if($e -and $e.Count){'ERR ' + $e.Count}else{'OK'}`,
+        ],
+        timeoutMs,
+      );
+      const parseOk = parse.stdout.includes("OK");
+      checks.push({
+        name: "守护脚本可解析",
+        ok: parseOk,
+        detail: parseOk ? "PowerShell 解析零错误（BOM 在的话中文注释才不会被读碎）" : "解析失败，脚本一行都不会执行",
+      });
+    } else {
+      checks.push({ name: "守护脚本可解析", ok: false, detail: "守护脚本还没生成（先 install_guard）" });
+    }
+
+    // ⑦ 守护任务
     checks.push({
       name: "守护计划任务",
       ok: guardInstalled,
@@ -330,9 +355,12 @@ export async function execute(args = {}, config = {}) {
       };
     }
     mkdirSync(p.guardDirWsl, { recursive: true });
+    // ★ 必须带 UTF-8 BOM。PowerShell 5.1 靠 BOM 判断编码；没有它就按系统代码页读，
+    //   脚本里的中文注释会被读碎，解析器报「意外的标记」——整份脚本一行都不执行。
     writeFileSync(
       p.guardPs1Wsl,
-      guardPs1Body({
+      "\uFEFF" +
+        guardPs1Body({
         watcherWin: p.watcherWin,
         logWin: p.logWin,
         guardLogWin: p.guardLogWin,

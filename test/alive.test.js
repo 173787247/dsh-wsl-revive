@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
 import {
@@ -198,4 +199,12 @@ test("patch 的 name 与仓里的包名不一致要被指出", () => {
   assert.equal(r.ok, false);
   assert.match(r.detail, /old-name/);
   assert.match(r.detail, /new-name/);
+});
+
+test("守护脚本必须能被 PowerShell 5.1 读：写入时带 UTF-8 BOM", () => {
+  // 这条钉的不是 guardPs1Body 的返回值，而是 index.js 落盘时加没加 BOM。
+  // PowerShell 5.1 没有 BOM 就按系统代码页（简体中文 GBK）读，中文注释会被读碎，
+  // 解析器报「意外的标记」，整份脚本一行都不执行 —— 守护就此静默失效。
+  const src = readFileSync(new URL("../index.js", import.meta.url), "utf8");
+  assert.match(src, /"\\uFEFF"/, "落盘时必须前置 BOM");
 });
