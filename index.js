@@ -14,6 +14,7 @@ import { promisify } from "node:util";
 
 import { distroName } from "./lib/wsl-host.js";
 import {
+  DEFAULT_DSH_PORT,
   DEFAULT_INTERVAL_MINUTES,
   DEFAULT_STALE_MINUTES,
   describe,
@@ -113,6 +114,11 @@ function paths(config, profileWin, distro) {
     logWsl: winPathToWsl(logWin),
     guardDirWsl,
     guardPs1Wsl: join(guardDirWsl, "dsh-ui-alive.ps1"),
+    // WSL 重启会把 dsh 带走，而常驻者在 Windows 侧不受影响 —— 所以守护也要能拉起 dsh。
+    // 用 kit 现成的 revive 脚本，不在这里重写一遍启动逻辑。
+    kitReviveSh: process.env.DSH_WSL_KIT
+      ? join(String(process.env.DSH_WSL_KIT), "scripts", "revive-dsh.sh")
+      : join(homedir(), "src", "dsh-wsl-kit", "scripts", "revive-dsh.sh"),
     guardLogWin: profileWin ? `${profileWin}\\dsh-ui-alive.log` : "",
   };
 }
@@ -224,6 +230,9 @@ export async function execute(args = {}, config = {}) {
         logWin: p.logWin,
         guardLogWin: p.guardLogWin,
         staleMinutes,
+        distro,
+        kitReviveSh: existsSync(p.kitReviveSh) ? p.kitReviveSh : "",
+        dshPort: positive(config.dshPort, DEFAULT_DSH_PORT),
       }),
       "utf8",
     );
@@ -243,6 +252,8 @@ export async function execute(args = {}, config = {}) {
       guardLog: p.guardLogWin,
       intervalMinutes,
       staleMinutes,
+      dshPort: positive(config.dshPort, DEFAULT_DSH_PORT),
+      kitReviveSh: p.kitReviveSh,
       note: created.ok
         ? `守护已安装：每 ${intervalMinutes} 分钟检查一次，心跳超过 ${staleMinutes} 分钟没更新就重启常驻者`
         : `注册计划任务失败: ${created.stderr.trim().slice(0, 200)}`,

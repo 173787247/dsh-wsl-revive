@@ -84,6 +84,31 @@ test("守护在活着的时候不写日志（避免刷屏）", () => {
   assert.match(PS1, /if \(\$ageMin -le \$staleMin\) \{ exit 0 \}/);
 });
 
+test("守护也检查 dsh 本身，而不只看常驻者", () => {
+  const body = guardPs1Body({
+    watcherWin: "C:\\w.ps1",
+    logWin: "C:\\l.log",
+    guardLogWin: "C:\\g.log",
+    distro: "D",
+    kitReviveSh: "/kit/scripts/revive-dsh.sh",
+    dshPort: 3080,
+  });
+  assert.match(body, /Test-DshPort 3080/);
+  assert.match(body, /wsl\.exe -d 'D' -- bash '\/kit\/scripts\/revive-dsh\.sh'/);
+  assert.ok(!/Get-Process/.test(body), "判据用 TCP，不用进程列表");
+});
+
+test("没有 kit 脚本时不假装能救 dsh", () => {
+  const body = guardPs1Body({
+    watcherWin: "C:\\w.ps1",
+    logWin: "C:\\l.log",
+    guardLogWin: "C:\\g.log",
+    distro: "",
+    kitReviveSh: "",
+  });
+  assert.match(body, /cannot revive dsh/);
+});
+
 test("守护记录了上次心跳是多久之前", () => {
   assert.match(PS1, /last heartbeat/);
 });
