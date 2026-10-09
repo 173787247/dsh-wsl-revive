@@ -13,8 +13,12 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 
 import { distroName } from "./lib/wsl-host.js";
+import { readdirSync, readFileSync } from "node:fs";
 import {
   DEFAULT_DSH_PORT,
+  checkPatchNames,
+  checkProfileConsistency,
+  checkShortcutArgs,
   DEFAULT_INTERVAL_MINUTES,
   DEFAULT_STALE_MINUTES,
   describe,
@@ -130,9 +134,11 @@ export function parameters(config = {}) {
     properties: {
       action: {
         type: "string",
-        enum: ["status", "install_guard", "uninstall_guard"],
+        enum: ["status", "verify", "install_guard", "uninstall_guard"],
         description:
           "status: 报告常驻者活着没有、守护装没装（不改任何东西）。" +
+          "verify: 逐条断言这条保活链的不变量（快捷方式参数、profile 三处一致、patch 包名、" +
+          "常驻者心跳、dsh 端口、守护任务），每一环都是改动后最容易静默断掉的地方。" +
           "install_guard: 写入守护脚本并注册 Windows 计划任务（幂等，不需要管理员）。" +
           "uninstall_guard: 删除计划任务（保留日志）。",
       },
@@ -193,6 +199,107 @@ export async function execute(args = {}, config = {}) {
   const v = verdict(lastWriteMs, Date.now(), staleMinutes);
   const ageMinutes =
     lastWriteMs === null ? null : (Date.now() - lastWriteMs) / 60000;
+
+  if (action === "verify") {
+    const checks = [];
+
+    // ① 启动快捷方式的参数：这是常驻者静默死掉的直接原因
+    const lnk = await win(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-Command",
+        "$s=New-Object -ComObject WScript.Shell;" +
+          "$p=Join-Path ([Environment]::GetFolderPath('Startup')) 'DSH UI Watcher.lnk';" +
+          "if(Test-Path $p){$s.CreateShortcut($p).Arguments}else{''}",
+      ],
+      timeoutMs,
+    );
+    checks.push({ name: "启动快捷方式参数", ...checkShortcutArgs(lnk.stdout) });
+
+    // ② profile 三处一致
+    try {
+      const home = homedir();
+      const prof = join(home, ".dsh", "profiles", "web");
+      const pkg = JSON.parse(readFileSync(join(prof, "package.json"), "utf8"));
+      const bundles = pkg?.dsh?.profile?.bundles ?? [];
+      const deps = pkg?.dependencies ?? {};
+      let installed = [];
+      try {
+        installed = readdirSync(join(prof, "node_modules"));
+      } catch {}
+      checks.push({ name: "profile 三处一致", ...checkProfileConsistency({ bundles, dependencies: deps, installed }) });
+    } catch (e) {
+      checks.push({ name: "profile 三处一致", ok: false, detail: `读不到 profile: ${e.message}` });
+    }
+
+    // ③ patch 里的 name 与实际包名
+    try {
+      const prof = join(homedir(), ".dsh", "profiles", "web");
+      const nm = join(prof, "node_modules");
+      const dirs = readdirSync(nm).filter((d) => d.startsWith("dsh-") && !d.startsWith("."));
+      const pairs = [];
+      const byRepo = {};
+      for (const d of dirs) {
+        try {
+          const pj = JSON.parse(readFileSync(join(nm, d, "package.json"), "utf8"));
+          const url = String(pj?.repository?.url ?? "");
+          const repo = url.split("github.com/")[1]?.replace(/\.git$/, "");
+          if (!repo) continue;
+          byRepo[repo.split("/").pop()] = pj.name;
+          const patchPath = join(nm, d, "cordis.patch.yml");
+          const text = readFileSync(patchPath, "utf8");
+          const m = /-\s*insert:\s*\n\s*-\s*id:\s*\S+\s*\n\s*name:\s*(\S+)/.exec(text);
+          if (m) pairs.push({ name: m[1], repo: repo.split("/").pop() });
+        } catch {}
+      }
+      checks.push({ name: "patch 包名与仓一致", ...checkPatchNames(pairs, byRepo) });
+    } catch (e) {
+      checks.push({ name: "patch 包名与仓一致", ok: false, detail: `扫描失败: ${e.message}` });
+    }
+
+    // ④ 常驻者心跳
+    checks.push({
+      name: "常驻者心跳",
+      ok: v === "alive",
+      detail: describe(v, ageMinutes),
+    });
+
+    // ⑤ dsh 端口
+    const port = positive(config.dshPort, DEFAULT_DSH_PORT);
+    const portCheck = await win(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-Command",
+        `$c=New-Object System.Net.Sockets.TcpClient;try{$i=$c.BeginConnect('127.0.0.1',${port},$null,$null);` +
+          "if($i.AsyncWaitHandle.WaitOne(2000)){$c.EndConnect($i);'up'}else{'down'}}catch{'down'}finally{$c.Close()}",
+      ],
+      timeoutMs,
+    );
+    const portUp = portCheck.stdout.includes("up");
+    checks.push({
+      name: `dsh 端口 ${port}`,
+      ok: portUp,
+      detail: portUp ? "在听" : "连不上 —— dsh 可能不在了，守护会拉起它",
+    });
+
+    // ⑥ 守护任务
+    checks.push({
+      name: "守护计划任务",
+      ok: guardInstalled,
+      detail: guardInstalled ? TASK_NAME : "未安装（install_guard 可装）",
+    });
+
+    return {
+      ok: checks.every((c) => c.ok),
+      action: "verify",
+      alive: v,
+      ageMinutes,
+      guardInstalled,
+      checks,
+    };
+  }
 
   if (action === "uninstall_guard") {
     if (!guardInstalled) {
@@ -314,6 +421,9 @@ export function format(value) {
   else if (value.alive) lines.push(`常驻者状态: ${value.alive}`);
   if (value.guardInstalled !== undefined) {
     lines.push(`守护: ${value.guardInstalled ? "已安装" : "未安装"}`);
+  }
+  if (Array.isArray(value.checks)) {
+    for (const c of value.checks) lines.push(`${c.ok ? "✓" : "✗"} ${c.name} — ${c.detail}`);
   }
   if (value.note) lines.push(value.note);
   if (value.error) lines.push(`错误: ${value.error}`);

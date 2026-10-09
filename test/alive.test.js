@@ -3,6 +3,9 @@ import { test } from "node:test";
 
 import {
   DEFAULT_STALE_MINUTES,
+  checkPatchNames,
+  checkProfileConsistency,
+  checkShortcutArgs,
   describe,
   guardPs1Body,
   parseSchtasksPresent,
@@ -155,4 +158,44 @@ test("parseSchtasksPresent：找不到就是没装", () => {
   assert.equal(parseSchtasksPresent("ERROR: cannot find", "", 1), false);
   assert.equal(parseSchtasksPresent("TaskName  Next Run Time\nT   ...", "", 0), true);
   assert.equal(parseSchtasksPresent("", "找不到", 1), false);
+});
+
+// ── 链条的不变量 ────────────────────────────────────────────────────
+
+test("快捷方式参数带 -WindowStyle Hidden 要被判失败", () => {
+  assert.equal(
+    checkShortcutArgs('-NoProfile -WindowStyle Hidden -File "x\\ui-watcher.ps1"').ok,
+    false,
+    "这正是常驻者静默死掉的原因，而且会被下一次重装写回去",
+  );
+  assert.equal(checkShortcutArgs('-NoProfile -File "x\\ui-watcher.ps1"').ok, true);
+  assert.equal(checkShortcutArgs("").ok, false);
+  assert.equal(checkShortcutArgs("-File something-else.ps1").ok, false);
+});
+
+test("profile 的 bundles / dependencies / node_modules 三处一致才算过", () => {
+  const good = checkProfileConsistency({
+    bundles: ["a", "b", "@x/base"],
+    dependencies: { a: "1", b: "1" },
+    installed: ["a", "b"],
+  });
+  assert.equal(good.ok, true);
+
+  const bad = checkProfileConsistency({
+    bundles: ["a", "b"],
+    dependencies: { a: "1" },
+    installed: ["a"],
+  });
+  assert.equal(bad.ok, false);
+  assert.match(bad.detail, /b/);
+});
+
+test("patch 的 name 与仓里的包名不一致要被指出", () => {
+  const r = checkPatchNames(
+    [{ name: "old-name", repo: "r1" }, { name: "ok-name", repo: "r2" }],
+    { r1: "new-name", r2: "ok-name" },
+  );
+  assert.equal(r.ok, false);
+  assert.match(r.detail, /old-name/);
+  assert.match(r.detail, /new-name/);
 });
